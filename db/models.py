@@ -51,6 +51,20 @@ class User(Base):
     time_add = Column(DateTime, default=datetime.utcnow)
 
 
+class CryptoFlow(Base):
+    """Модель для отслеживания изменений баланса"""
+    __tablename__ = "crypto_flow"
+
+    id = Column(Integer, primary_key=True)
+    wallet_id = Column(Integer, ForeignKey("wallet.id"))
+    amount = Column(Float, nullable=False)  # Изменение количества монет
+    coin = Column(String, nullable=False)    # Тип монеты
+    price = Column(Float, nullable=False)    # Стоимость изменения в USD
+    time_created = Column(DateTime, default=datetime.utcnow)
+
+    wallet = relationship("Wallet")
+
+
 async def create_tables():
     """Создает таблицы в базе данных"""
     async with engine.begin() as conn:

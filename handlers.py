@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta
 from io import BytesIO
 
 from aiogram import Router, F
@@ -8,7 +9,7 @@ from openpyxl.workbook import Workbook
 from sqlalchemy import select, delete, func
 from sqlalchemy.exc import IntegrityError
 
-from db.models import Session, Wallet, Balance, User
+from db.models import Session, Wallet, Balance, User, CryptoFlow
 from config import ADMIN_IDS, USER_PASS
 
 router = Router()
@@ -190,3 +191,56 @@ async def export_data(message: Message):
         document=excel_file,
         caption="Экспорт данных о балансах"
     )
+
+
+@router.message(Command("stats"), F.from_user.id.in_(ADMIN_IDS))
+async def show_stats(message: Message):
+    async with Session() as session:
+        now = datetime.utcnow()
+
+        # Временные интервалы
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(hours=3)
+        # Начало недели (понедельник)
+        week_start = now - timedelta(days=now.weekday())
+        week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(hours=3)
+
+        # Начало месяца
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0) - timedelta(hours=3)
+
+        # Запросы для разных периодов
+        queries = {
+            "сутки": session.execute(
+                select(func.sum(CryptoFlow.price))
+                .where(
+                    CryptoFlow.price > 0,
+                    CryptoFlow.time_created >= today_start
+                )
+            ),
+            "неделю": session.execute(
+                select(func.sum(CryptoFlow.price))
+                .where(
+                    CryptoFlow.price > 0,
+                    CryptoFlow.time_created >= week_start
+                )
+            ),
+            "месяц": session.execute(
+                select(func.sum(CryptoFlow.price))
+                .where(
+                    CryptoFlow.price > 0,
+                    CryptoFlow.time_created >= month_start
+                )
+            ),
+            "все время": session.execute(
+                select(func.sum(CryptoFlow.price))
+                .where(CryptoFlow.price > 0)
+            )
+        }
+
+        # Получаем результаты
+        stats_text = "📊 Статистика поступлений:\n\n"
+        for period, query in queries.items():
+            result = await query
+            total = result.scalar() or 0
+            stats_text += f"За {period}: {total:.2f} $\n"
+
+        await message.answer(stats_text)

@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 
 import requests
 from sqlalchemy import select, desc
-from db.models import Session, Wallet, Balance, User
+from db.models import Session, Wallet, Balance, User, CryptoFlow
 from bot import bot
 from config import ADMIN_IDS, ETH_TOKEN
 
@@ -34,9 +34,10 @@ async def get_balance_btc(address):
         balance_satoshi = data[address]['final_balance']
         # Конвертируем в BTC (1 BTC = 100,000,000 сатоши)
         balance_btc = balance_satoshi / 100000000
-        price = get_price('bitcoin') * balance_btc
+        currency = get_price('bitcoin')
+        price = currency * balance_btc
 
-        return balance_btc, 'btc', price
+        return balance_btc, 'btc', price, currency
 
     except Exception as e:
         print(f"Ошибка при получении баланса BTC: {e}")
@@ -53,9 +54,10 @@ async def get_balance_ton(address):
         balance_nano = int(data['result']['balance'])
         # Конвертируем в TON (1 TON = 1e9 нанотон)
         balance_ton = balance_nano / 1e9
-        price = get_price('the-open-network') * balance_ton  # Используем корректный ID для TON
+        currency = get_price('the-open-network')
+        price = currency * balance_ton  # Используем корректный ID для TON
 
-        return balance_ton, 'ton', price
+        return balance_ton, 'ton', price, currency
 
     except Exception as e:
         print(f"Ошибка при получении баланса TON: {e}")
@@ -73,9 +75,10 @@ async def get_balance_eth(address):
             balance_wei = int(data['result'])
             # Конвертируем в ETH (1 ETH = 10^18 wei)
             balance_eth = balance_wei / 10 ** 18
-            price = get_price('ethereum') * balance_eth  # Используем ID Ethereum
+            currency = get_price('ethereum')
+            price = currency * balance_eth  # Используем ID Ethereum
 
-            return balance_eth, 'eth', price
+            return balance_eth, 'eth', price, currency
         else:
             print(f"Ошибка API Etherscan: {data['message']}")
             return 0, 'eth', 0
@@ -109,9 +112,10 @@ async def get_balance_usdt_tron(address):
                 break
 
         # Получаем цену USDT
-        price = get_price('tether') * usdt_balance
+        currency = get_price('tether')
+        price = currency * usdt_balance
 
-        return usdt_balance, 'usdt', price
+        return usdt_balance, 'usdt', price, currency
 
     except Exception as e:
         print(f"Ошибка при получении баланса USDT-TRON: {e}")
@@ -133,22 +137,22 @@ async def check_balances():
             'tron': []
         }
         total_balance = 0.0
+        total_inflow = 0.0  # Сумма поступлений
+        total_outflow = 0.0  # Сумма выводов
 
         for wallet in wallets:
             await asyncio.sleep(10)
-            # Получаем баланс в зависимости от типа токена
             if wallet.token == 'btc':
-                amount, coin, price = await get_balance_btc(wallet.address)
+                amount, coin, price, currency = await get_balance_btc(wallet.address)
             elif wallet.token == 'eth':
-                amount, coin, price = await get_balance_eth(wallet.address)
+                amount, coin, price, currency = await get_balance_eth(wallet.address)
             elif wallet.token == 'ton':
-                amount, coin, price = await get_balance_ton(wallet.address)
+                amount, coin, price, currency = await get_balance_ton(wallet.address)
             elif wallet.token == 'tron':
-                amount, coin, price = await get_balance_usdt_tron(wallet.address)
+                amount, coin, price, currency = await get_balance_usdt_tron(wallet.address)
             else:
                 continue
 
-            # Сохраняем данные для отчета
             balances_by_token[wallet.token].append((wallet.address, amount, price))
             total_balance += price
 
@@ -172,15 +176,32 @@ async def check_balances():
             )
             balances = last_balance.scalars().all()
 
-            # Если это не первая проверка и баланс изменился
             if len(balances) > 1 and balances[0].amount != balances[1].amount:
                 changes_detected = True
+                # Вычисляем изменение баланса
+                delta = balances[0].amount - balances[1].amount
+                delta_price = balances[0].price - balances[1].price
+
+                # Записываем изменение в CryptoFlow
+                flow = CryptoFlow(
+                    wallet_id=wallet.id,
+                    amount=delta,
+                    coin=wallet.token,
+                    price=delta_price
+                )
+                session.add(flow)
+
+                # Суммируем приток/отток
+                if delta > 0:
+                    total_inflow += delta_price
+                else:
+                    total_outflow += abs(delta_price)
+
             elif len(balances) == 1:
                 changes_detected = True
 
         await session.commit()
 
-        # Формируем и отправляем сообщение, если есть изменения
         if changes_detected:
             message = ""
             for token in ['btc', 'eth', 'ton', 'tron']:
@@ -193,13 +214,16 @@ async def check_balances():
                             message += f"{address} - {amount} usdt\n"
                     message += "\n"
 
-            message += f"Общий баланс в USD - {total_balance:.2f}"
+            message += f"Общий баланс в USD - {total_balance:.2f} $\n"
 
-            # Отправляем сообщение всем админам
+            if total_inflow > 0:
+                message += f"Поступление - {total_inflow:.2f} $\n"
+            if total_outflow > 0:
+                message += f"Вывод - {total_outflow:.2f} $\n"
+
             for admin_id in ADMIN_IDS:
                 await bot.send_message(admin_id, message)
 
-            # Отправляем сообщение всем активным юзерам
             result = await session.execute(select(User).where(User.is_active == True))
             active_users = result.scalars().all()
 
@@ -207,7 +231,6 @@ async def check_balances():
                 try:
                     await bot.send_message(user.user_id, message)
                 except:
-                    # Если пользователь заблокировал бота
                     pass
 
 
