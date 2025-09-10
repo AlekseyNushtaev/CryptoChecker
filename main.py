@@ -1,6 +1,6 @@
 import asyncio
 import logging
-
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram import Dispatcher
 
 import handlers
@@ -46,8 +46,9 @@ async def main() -> None:
 
         asyncio.create_task(periodic_balance_check())
 
-        # Создание диспетчера для обработки событий
-        dp: Dispatcher = Dispatcher()
+        # Создание диспетчера с хранилищем состояний
+        storage = MemoryStorage()
+        dp: Dispatcher = Dispatcher(storage=storage)  # Добавляем хранилище
 
         # Регистрация роутеров
         dp.include_router(handlers.router)  # обработчики
