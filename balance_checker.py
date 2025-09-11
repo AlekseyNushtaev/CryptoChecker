@@ -6,6 +6,7 @@ from sqlalchemy import select, desc
 from db.models import Session, Wallet, Balance, User, CryptoFlow
 from bot import bot
 from config import ADMIN_IDS, ETH_TOKEN
+from handlers import get_admin_keyboard
 
 
 def get_price(coin):
@@ -29,7 +30,7 @@ async def get_balance_btc(address):
         # Проверяем наличие данных об адресе
         if address not in data:
             print("Адрес не найден или ошибка в ответе API")
-            return 0, 'btc', 0
+            return 0, 'btc', 0, 0
 
         balance_satoshi = data[address]['final_balance']
         # Конвертируем в BTC (1 BTC = 100,000,000 сатоши)
@@ -41,7 +42,7 @@ async def get_balance_btc(address):
 
     except Exception as e:
         print(f"Ошибка при получении баланса BTC: {e}")
-        return 0, 'btc', 0
+        return 0, 'btc', 0, 0
 
 
 async def get_balance_ton(address):
@@ -61,7 +62,7 @@ async def get_balance_ton(address):
 
     except Exception as e:
         print(f"Ошибка при получении баланса TON: {e}")
-        return 0, 'ton', 0
+        return 0, 'ton', 0, 0
 
 
 async def get_balance_eth(address):
@@ -81,11 +82,11 @@ async def get_balance_eth(address):
             return balance_eth, 'eth', price, currency
         else:
             print(f"Ошибка API Etherscan: {data['message']}")
-            return 0, 'eth', 0
+            return 0, 'eth', 0, 0
 
     except Exception as e:
         print(f"Ошибка при получении баланса ETH: {e}")
-        return 0, 'eth', 0
+        return 0, 'eth', 0, 0
 
 
 async def get_balance_usdt_tron(address):
@@ -101,7 +102,7 @@ async def get_balance_usdt_tron(address):
 
         # Проверяем наличие данных об аккаунте
         if 'trc20token_balances' not in data:
-            return 0, 'usdt', 0
+            return 0, 'usdt', 0, 0
 
         # Ищем USDT среди TRC20 токенов
         usdt_balance = 0
@@ -119,7 +120,7 @@ async def get_balance_usdt_tron(address):
 
     except Exception as e:
         print(f"Ошибка при получении баланса USDT-TRON: {e}")
-        return 0, 'usdt', 0
+        return 0, 'usdt', 0, 0
 
 
 async def check_balances():
@@ -222,7 +223,7 @@ async def check_balances():
                 message += f"Вывод - {total_outflow:.2f} $\n"
 
             for admin_id in ADMIN_IDS:
-                await bot.send_message(admin_id, message)
+                await bot.send_message(admin_id, message, reply_markup=get_admin_keyboard())
 
             result = await session.execute(select(User).where(User.is_active == True))
             active_users = result.scalars().all()
