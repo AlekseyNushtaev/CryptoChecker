@@ -1,9 +1,10 @@
 import asyncio
 from datetime import datetime, timedelta
+from pprint import pprint
 
 import requests
 from sqlalchemy import select, desc
-from db.models import Session, Wallet, Balance, User, CryptoFlow
+from db.models import Session, Wallet, Balance, User, CryptoFlow, Currency
 from bot import bot
 from config import ADMIN_IDS, ETH_TOKEN
 from handlers import get_admin_keyboard
@@ -17,11 +18,12 @@ def get_price(coin):
         price = data[coin]['usd']
         return price
     except:
-        return 0
+        return None
 
 
-async def get_balance_btc(address):
+async def get_balance_btc(address, currency):
     url = f"https://blockchain.info/balance?active={address}"
+    print(address)
 
     try:
         response = requests.get(url)
@@ -29,23 +31,25 @@ async def get_balance_btc(address):
 
         # Проверяем наличие данных об адресе
         if address not in data:
-            print("Адрес не найден или ошибка в ответе API")
-            return 0, 'btc', 0, 0
+            pprint(data)
+            print(f"Адрес не найден или ошибка в ответе API - {address}")
+            await bot.send_message(1012882762, f"Адрес не найден или ошибка в ответе API BTC - {address}")
+            return None, None, None
 
         balance_satoshi = data[address]['final_balance']
         # Конвертируем в BTC (1 BTC = 100,000,000 сатоши)
         balance_btc = balance_satoshi / 100000000
-        currency = get_price('bitcoin')
         price = currency * balance_btc
 
-        return balance_btc, 'btc', price, currency
+        return balance_btc, 'btc', price
 
     except Exception as e:
         print(f"Ошибка при получении баланса BTC: {e}")
-        return 0, 'btc', 0, 0
+        await bot.send_message(1012882762, f"{address} - Ошибка при получении баланса BTC: {e}")
+        return None, None, None
 
 
-async def get_balance_ton(address):
+async def get_balance_ton(address, currency):
     url = f"https://toncenter.com/api/v2/getAddressInformation?address={address}"
 
     try:
@@ -55,17 +59,17 @@ async def get_balance_ton(address):
         balance_nano = int(data['result']['balance'])
         # Конвертируем в TON (1 TON = 1e9 нанотон)
         balance_ton = balance_nano / 1e9
-        currency = get_price('the-open-network')
         price = currency * balance_ton  # Используем корректный ID для TON
 
-        return balance_ton, 'ton', price, currency
+        return balance_ton, 'ton', price
 
     except Exception as e:
         print(f"Ошибка при получении баланса TON: {e}")
-        return 0, 'ton', 0, 0
+        await bot.send_message(1012882762, f"{address} - Ошибка при получении баланса TON: {e}")
+        return None, None, None
 
 
-async def get_balance_eth(address):
+async def get_balance_eth(address, currency):
     url = f"https://api.etherscan.io/api?module=account&action=balance&address={address}&tag=latest&apikey={ETH_TOKEN}"
 
     try:
@@ -76,20 +80,21 @@ async def get_balance_eth(address):
             balance_wei = int(data['result'])
             # Конвертируем в ETH (1 ETH = 10^18 wei)
             balance_eth = balance_wei / 10 ** 18
-            currency = get_price('ethereum')
             price = currency * balance_eth  # Используем ID Ethereum
 
-            return balance_eth, 'eth', price, currency
+            return balance_eth, 'eth', price
         else:
             print(f"Ошибка API Etherscan: {data['message']}")
-            return 0, 'eth', 0, 0
+            await bot.send_message(1012882762, f"{address} - Ошибка API Etherscan: {data['message']}")
+            return None, None, None
 
     except Exception as e:
         print(f"Ошибка при получении баланса ETH: {e}")
-        return 0, 'eth', 0, 0
+        await bot.send_message(1012882762, f"{address} - Ошибка при получении баланса ETH: {e}")
+        return None, None, None
 
 
-async def get_balance_usdt_tron(address):
+async def get_balance_usdt_tron(address, currency):
     # USDT contract address on TRON (для проверки в ответе)
     usdt_contract_address = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
 
@@ -102,7 +107,7 @@ async def get_balance_usdt_tron(address):
 
         # Проверяем наличие данных об аккаунте
         if 'trc20token_balances' not in data:
-            return 0, 'usdt', 0, 0
+            return 0, 'usdt', 0
 
         # Ищем USDT среди TRC20 токенов
         usdt_balance = 0
@@ -113,14 +118,14 @@ async def get_balance_usdt_tron(address):
                 break
 
         # Получаем цену USDT
-        currency = get_price('tether')
         price = currency * usdt_balance
 
-        return usdt_balance, 'usdt', price, currency
+        return usdt_balance, 'usdt', price
 
     except Exception as e:
         print(f"Ошибка при получении баланса USDT-TRON: {e}")
-        return 0, 'usdt', 0, 0
+        await bot.send_message(1012882762, f"{address} - Ошибка при получении баланса USDT-TRON: {e}")
+        return None, None, None
 
 
 async def check_balances():
@@ -141,16 +146,68 @@ async def check_balances():
         total_inflow = 0.0  # Сумма поступлений
         total_outflow = 0.0  # Сумма выводов
 
-        for wallet in wallets:
+        # Блок получения курсов монет
+        currency_mapping = {
+            'btc': 'bitcoin',
+            'eth': 'ethereum',
+            'ton': 'the-open-network',
+            'tron': 'tether'  # Для TRON используем курс USDT
+        }
+
+        currencies = {}
+        for coin_name, gecko_id in currency_mapping.items():
+            price = get_price(gecko_id)
             await asyncio.sleep(10)
+
+            async with Session() as temp_session:
+                if price is not None:
+                    # Обновляем курс в базе данных
+                    result = await temp_session.execute(
+                        select(Currency).where(Currency.coin == coin_name)
+                    )
+                    currency_record = result.scalar_one_or_none()
+
+                    if currency_record:
+                        currency_record.currency = price
+                    else:
+                        currency_record = Currency(coin=coin_name, currency=price)
+                        temp_session.add(currency_record)
+
+                    await temp_session.commit()
+                    currencies[coin_name] = price
+                else:
+                    await bot.send_message(1012882762, f"Ошибка при получении курса {coin_name}")
+                    # Берем последний курс из базы данных
+                    result = await temp_session.execute(
+                        select(Currency.currency)
+                        .where(Currency.coin == coin_name)
+                    )
+                    last_currency = result.scalar_one_or_none()
+                    currencies[coin_name] = last_currency if last_currency else 0.0
+
+        currency_btc = currencies['btc']
+        currency_eth = currencies['eth']
+        currency_ton = currencies['ton']
+        currency_tron = currencies['tron']
+
+        for wallet in wallets:
+            await asyncio.sleep(3)
             if wallet.token == 'btc':
-                amount, coin, price, currency = await get_balance_btc(wallet.address)
+                amount, coin, price = await get_balance_btc(wallet.address, currency_btc)
+                if not amount:
+                    continue
             elif wallet.token == 'eth':
-                amount, coin, price, currency = await get_balance_eth(wallet.address)
+                amount, coin, price = await get_balance_eth(wallet.address, currency_eth)
+                if not amount:
+                    continue
             elif wallet.token == 'ton':
-                amount, coin, price, currency = await get_balance_ton(wallet.address)
+                amount, coin, price = await get_balance_ton(wallet.address, currency_ton)
+                if not amount:
+                    continue
             elif wallet.token == 'tron':
-                amount, coin, price, currency = await get_balance_usdt_tron(wallet.address)
+                amount, coin, price = await get_balance_usdt_tron(wallet.address, currency_tron)
+                if not amount:
+                    continue
             else:
                 continue
 
@@ -240,5 +297,5 @@ async def periodic_balance_check():
         start_time = datetime.now()
         await check_balances()  # Основная задача
         elapsed = datetime.now() - start_time  # Время выполнения задачи
-        wait_time = max(timedelta(minutes=15) - elapsed, timedelta(0))  # Ждём оставшееся время
+        wait_time = max(timedelta(minutes=5) - elapsed, timedelta(0))  # Ждём оставшееся время
         await asyncio.sleep(wait_time.total_seconds())  # Ожидание до следующего цикла

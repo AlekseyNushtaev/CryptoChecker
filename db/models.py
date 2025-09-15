@@ -65,6 +65,14 @@ class CryptoFlow(Base):
     wallet = relationship("Wallet")
 
 
+class Currency(Base):
+    __tablename__ = "currency"
+
+    id = Column(Integer, primary_key=True)
+    coin = Column(String, nullable=False)
+    currency = Column(Float, nullable=False)
+
+
 async def create_tables():
     """Создает таблицы в базе данных"""
     async with engine.begin() as conn:
