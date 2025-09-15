@@ -194,19 +194,19 @@ async def check_balances():
             await asyncio.sleep(3)
             if wallet.token == 'btc':
                 amount, coin, price = await get_balance_btc(wallet.address, currency_btc)
-                if not amount:
+                if amount is None:
                     continue
             elif wallet.token == 'eth':
                 amount, coin, price = await get_balance_eth(wallet.address, currency_eth)
-                if not amount:
+                if amount is None:
                     continue
             elif wallet.token == 'ton':
                 amount, coin, price = await get_balance_ton(wallet.address, currency_ton)
-                if not amount:
+                if amount is None:
                     continue
             elif wallet.token == 'tron':
                 amount, coin, price = await get_balance_usdt_tron(wallet.address, currency_tron)
-                if not amount:
+                if amount is None:
                     continue
             else:
                 continue
