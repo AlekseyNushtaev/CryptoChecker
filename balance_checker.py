@@ -23,7 +23,6 @@ def get_price(coin):
 
 async def get_balance_btc(address, currency):
     url = f"https://blockchain.info/balance?active={address}"
-    print(address)
 
     try:
         response = requests.get(url)
@@ -70,7 +69,7 @@ async def get_balance_ton(address, currency):
 
 
 async def get_balance_eth(address, currency):
-    url = f"https://api.etherscan.io/api?module=account&action=balance&address={address}&tag=latest&apikey={ETH_TOKEN}"
+    url = f"https://api.etherscan.io/v2/api?chainid=1&module=account&action=balance&address={address}&tag=latest&apikey={ETH_TOKEN}"
 
     try:
         response = requests.get(url)
