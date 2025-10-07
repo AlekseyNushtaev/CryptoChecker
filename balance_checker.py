@@ -294,7 +294,11 @@ async def check_balances():
 async def periodic_balance_check():
     while True:
         start_time = datetime.now()
-        await check_balances()  # Основная задача
+        try:
+            await check_balances()  # Основная задача
+        except Exception as e:
+            await bot.send_message(1012882762, f"Общая ошибка: {e}")
+            await asyncio.sleep(300)
         elapsed = datetime.now() - start_time  # Время выполнения задачи
         wait_time = max(timedelta(minutes=5) - elapsed, timedelta(0))  # Ждём оставшееся время
         await asyncio.sleep(wait_time.total_seconds())  # Ожидание до следующего цикла
