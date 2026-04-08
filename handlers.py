@@ -480,9 +480,9 @@ async def stats_custom_end_date(message: Message, state: FSMContext):
     else:
         for w, amt in per_wallet:
             coin = w.token.upper()
-            addr_short = html.escape(_shorten_address(w.address))
+            addr_full = html.escape(w.address)
             msg_lines.append(
-                f"• <b>{coin}</b> <code>{addr_short}</code> — {amt:.2f} $"
+                f"• <b>{coin}</b> <code>{addr_full}</code> — {amt:.2f} $"
             )
     if orphan_total > 0:
         msg_lines.append(
