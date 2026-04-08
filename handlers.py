@@ -1,5 +1,6 @@
 import html
-from datetime import datetime, timedelta
+import re
+from datetime import date, datetime, timedelta
 
 from aiogram import Router, F
 from aiogram.types import (
@@ -32,6 +33,62 @@ def get_admin_keyboard() -> ReplyKeyboardMarkup:
         ],
         resize_keyboard=True,
     )
+
+
+def stats_custom_inline_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📅 Кастомная статистика",
+                    callback_data="stats:custom",
+                )
+            ]
+        ]
+    )
+
+
+def _day_boundary_datetime(d: date, *, end_of_day: bool) -> datetime:
+    """Как в show_stats: полуночь календарного дня в UTC, сдвиг −3 ч."""
+    base = datetime(d.year, d.month, d.day, 0, 0, 0)
+    if end_of_day:
+        base = base + timedelta(days=1)
+    return base - timedelta(hours=3)
+
+
+def parse_date_ddmmyy(text: str) -> tuple[date | None, str | None]:
+    """
+    Формат ДД.ММ.ГГ или ДД.ММ.ГГГГ (цифры, разделитель точка).
+    Возвращает (date, None) или (None, сообщение об ошибке).
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return None, "Введите дату, например 15.03.25"
+    if not re.fullmatch(r"\d{1,2}\.\d{1,2}\.\d{2,4}", raw):
+        return None, "Используйте формат ДД.ММ.ГГ или ДД.ММ.ГГГГ, только цифры и точки."
+
+    parts = raw.split(".")
+    d_s, m_s, y_s = parts[0], parts[1], parts[2]
+    try:
+        dd = int(d_s)
+        mm = int(m_s)
+        yy = int(y_s)
+    except ValueError:
+        return None, "Некорректные числа в дате."
+
+    if len(y_s) == 2:
+        yyyy = 2000 + yy
+    elif len(y_s) == 4:
+        yyyy = yy
+    else:
+        return None, "Год укажите двумя (25) или четырьмя (2025) цифрами."
+
+    try:
+        parsed = date(yyyy, mm, dd)
+    except ValueError:
+        return None, "Такой даты не существует. Проверьте день, месяц и год."
+
+    return parsed, None
 
 
 def _shorten_address(addr: str, left: int = 10, right: int = 8) -> str:
@@ -124,6 +181,41 @@ async def try_edit_wallets_panel(bot, chat_id: int, message_id: int) -> bool:
 
 class AdminStates(StatesGroup):
     waiting_for_wallet_address = State()
+    custom_stats_start = State()
+    custom_stats_end = State()
+
+
+async def custom_range_inflows_by_wallet(
+    start_d: date, end_d: date
+) -> tuple[float, list[tuple[Wallet, float]], float]:
+    """
+    Поступления (CryptoFlow.price > 0) за [start_d, end_d] включительно.
+    Возвращает (общая сумма, список (кошелёк, сумма) в порядке списка кошельков,
+    сумма по wallet_id без записи в таблице wallet — редкий случай).
+    """
+    start_dt = _day_boundary_datetime(start_d, end_of_day=False)
+    end_excl = _day_boundary_datetime(end_d, end_of_day=True)
+    async with Session() as session:
+        result = await session.execute(
+            select(CryptoFlow.wallet_id, func.sum(CryptoFlow.price)).where(
+                CryptoFlow.price > 0,
+                CryptoFlow.time_created >= start_dt,
+                CryptoFlow.time_created < end_excl,
+            ).group_by(CryptoFlow.wallet_id)
+        )
+        by_id: dict[int, float] = {
+            wid: float(s or 0) for wid, s in result.all()
+        }
+
+    total = sum(by_id.values())
+    wallets = await load_wallets_sorted()
+    known_ids = {w.id for w in wallets}
+    orphan_total = sum(amt for wid, amt in by_id.items() if wid not in known_ids)
+
+    rows: list[tuple[Wallet, float]] = [
+        (w, by_id.get(w.id, 0.0)) for w in wallets
+    ]
+    return total, rows, orphan_total
 
 
 @router.message(Command("start"))
@@ -153,8 +245,13 @@ async def start_command(message: Message, state: FSMContext):
                 await message.answer("Введите пароль для активации:")
 
 
+def _fmt_dd_mm_yy(d: date) -> str:
+    return f"{d.day:02d}.{d.month:02d}.{d.year % 100:02d}"
+
+
 @router.message(F.text == "📊 Статистика", F.from_user.id.in_(ADMIN_IDS))
-async def show_stats(message: Message):
+async def show_stats(message: Message, state: FSMContext):
+    await state.clear()
     async with Session() as session:
         now = datetime.utcnow()
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(hours=3)
@@ -162,40 +259,60 @@ async def show_stats(message: Message):
         week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(hours=3)
         month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0) - timedelta(hours=3)
 
-        queries = {
-            "сутки": session.execute(
-                select(func.sum(CryptoFlow.price))
-                .where(
-                    CryptoFlow.price > 0,
-                    CryptoFlow.time_created >= today_start,
-                )
-            ),
-            "неделю": session.execute(
-                select(func.sum(CryptoFlow.price))
-                .where(
-                    CryptoFlow.price > 0,
-                    CryptoFlow.time_created >= week_start,
-                )
-            ),
-            "месяц": session.execute(
-                select(func.sum(CryptoFlow.price))
-                .where(
-                    CryptoFlow.price > 0,
-                    CryptoFlow.time_created >= month_start,
-                )
-            ),
-            "все время": session.execute(
-                select(func.sum(CryptoFlow.price)).where(CryptoFlow.price > 0)
-            ),
-        }
+        first_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        if first_of_month.month == 1:
+            prev_cal = datetime(first_of_month.year - 1, 12, 1, 0, 0, 0)
+        else:
+            prev_cal = datetime(first_of_month.year, first_of_month.month - 1, 1, 0, 0, 0)
+        prev_month_start = prev_cal - timedelta(hours=3)
+
+        q_day = session.execute(
+            select(func.sum(CryptoFlow.price)).where(
+                CryptoFlow.price > 0,
+                CryptoFlow.time_created >= today_start,
+            )
+        )
+        q_week = session.execute(
+            select(func.sum(CryptoFlow.price)).where(
+                CryptoFlow.price > 0,
+                CryptoFlow.time_created >= week_start,
+            )
+        )
+        q_month = session.execute(
+            select(func.sum(CryptoFlow.price)).where(
+                CryptoFlow.price > 0,
+                CryptoFlow.time_created >= month_start,
+            )
+        )
+        q_prev_month = session.execute(
+            select(func.sum(CryptoFlow.price)).where(
+                CryptoFlow.price > 0,
+                CryptoFlow.time_created >= prev_month_start,
+                CryptoFlow.time_created < month_start,
+            )
+        )
+        q_all = session.execute(
+            select(func.sum(CryptoFlow.price)).where(CryptoFlow.price > 0)
+        )
+
+        rows = [
+            ("сутки", q_day),
+            ("неделю", q_week),
+            ("месяц", q_month),
+            ("прошлый месяц", q_prev_month),
+            ("все время", q_all),
+        ]
 
         stats_text = "📊 Статистика поступлений:\n\n"
-        for period, query in queries.items():
+        for period, query in rows:
             result = await query
             total = result.scalar() or 0
             stats_text += f"За {period}: {total:.2f} $\n"
 
-        await message.answer(stats_text, reply_markup=get_admin_keyboard())
+    await message.answer(
+        stats_text,
+        reply_markup=stats_custom_inline_keyboard(),
+    )
 
 
 @router.message(F.text == "💼 Кошельки", F.from_user.id.in_(ADMIN_IDS))
@@ -203,6 +320,87 @@ async def show_wallets_panel(message: Message, state: FSMContext):
     await state.clear()
     text, kb = await build_wallets_message_payload()
     await message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
+@router.callback_query(F.data == "stats:custom", F.from_user.id.in_(ADMIN_IDS))
+async def stats_custom_callback(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(AdminStates.custom_stats_start)
+    await callback.answer()
+    await callback.message.answer(
+        "Введите дату <b>начала</b> периода в формате ДД.ММ.ГГ (например 15.03.25):",
+        parse_mode="HTML",
+        reply_markup=get_admin_keyboard(),
+    )
+
+
+@router.message(AdminStates.custom_stats_start, F.from_user.id.in_(ADMIN_IDS))
+async def stats_custom_start_date(message: Message, state: FSMContext):
+    parsed, err = parse_date_ddmmyy(message.text)
+    if err:
+        await message.answer(
+            f"{err}\n\nПример: 01.04.25",
+            reply_markup=get_admin_keyboard(),
+        )
+        return
+    await state.update_data(custom_stats_start=parsed.isoformat())
+    await state.set_state(AdminStates.custom_stats_end)
+    await message.answer(
+        "Введите дату <b>конца</b> периода в формате ДД.ММ.ГГ (включительно):",
+        parse_mode="HTML",
+        reply_markup=get_admin_keyboard(),
+    )
+
+
+@router.message(AdminStates.custom_stats_end, F.from_user.id.in_(ADMIN_IDS))
+async def stats_custom_end_date(message: Message, state: FSMContext):
+    data = await state.get_data()
+    start_raw = data.get("custom_stats_start")
+    if not start_raw:
+        await state.clear()
+        await message.answer("Сессия сброшена. Нажмите «Кастомная статистика» снова.")
+        return
+
+    start_d = date.fromisoformat(start_raw)
+    end_d, err = parse_date_ddmmyy(message.text)
+    if err:
+        await message.answer(
+            f"{err}\n\nПример: 30.04.25",
+            reply_markup=get_admin_keyboard(),
+        )
+        return
+    if end_d < start_d:
+        await message.answer(
+            "Дата конца не может быть раньше даты начала. Введите дату конца ещё раз:",
+            reply_markup=get_admin_keyboard(),
+        )
+        return
+
+    total, per_wallet, orphan_total = await custom_range_inflows_by_wallet(start_d, end_d)
+    a, b = _fmt_dd_mm_yy(start_d), _fmt_dd_mm_yy(end_d)
+    msg_lines = [
+        f"Поступлений в период {a}-{b} включительно — {total:.2f} $",
+        "",
+        "<b>По кошелькам:</b>",
+    ]
+    if not per_wallet:
+        msg_lines.append("<i>Нет кошельков в базе.</i>")
+    else:
+        for w, amt in per_wallet:
+            coin = w.token.upper()
+            addr_short = html.escape(_shorten_address(w.address))
+            msg_lines.append(
+                f"• <b>{coin}</b> <code>{addr_short}</code> — {amt:.2f} $"
+            )
+    if orphan_total > 0:
+        msg_lines.append(
+            f"• <i>Прочие (нет в списке кошельков)</i> — {orphan_total:.2f} $"
+        )
+    await message.answer(
+        "\n".join(msg_lines),
+        parse_mode="HTML",
+        reply_markup=get_admin_keyboard(),
+    )
+    await state.clear()
 
 
 @router.callback_query(F.data.startswith("w:i:"), F.from_user.id.in_(ADMIN_IDS))
