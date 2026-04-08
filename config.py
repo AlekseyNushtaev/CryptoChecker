@@ -15,3 +15,6 @@ USER_PASS: str = os.environ.get("USER_PASS")
 
 _signal_raw: Optional[str] = os.environ.get("SIGNAL")
 SIGNAL: Optional[int] = int(_signal_raw) if _signal_raw else None
+
+# Опционально: https://docs.coingecko.com/ — снимает жёсткие лимиты бесплатного tier
+COINGECKO_DEMO_API_KEY: Optional[str] = os.environ.get("COINGECKO_DEMO_API_KEY")

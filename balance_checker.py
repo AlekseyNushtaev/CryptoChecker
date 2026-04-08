@@ -6,19 +6,63 @@ import requests
 from sqlalchemy import select, desc
 from db.models import Session, Wallet, Balance, User, CryptoFlow, Currency
 from bot import bot, notify_signal
-from config import ADMIN_IDS, ETH_TOKEN
+from config import ADMIN_IDS, ETH_TOKEN, COINGECKO_DEMO_API_KEY
 from handlers import get_admin_keyboard
 
 
-def get_price(coin):
+COINGECKO_SIMPLE_PRICE = "https://api.coingecko.com/api/v3/simple/price"
+
+
+def fetch_coingecko_usd_prices(gecko_ids: tuple[str, ...]) -> dict[str, float]:
+    """
+    Один запрос CoinGecko simple/price для всех id (меньше риск 429, чем по одной монете).
+    Ключи результата — те же id, что в CoinGecko (bitcoin, tether, ...).
+    """
+    unique_ids = tuple(dict.fromkeys(gecko_ids))
+    if not unique_ids:
+        return {}
+
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "CryptoChecker/1.0",
+    }
+    if COINGECKO_DEMO_API_KEY:
+        headers["x-cg-demo-api-key"] = COINGECKO_DEMO_API_KEY
+
+    params = {
+        "ids": ",".join(unique_ids),
+        "vs_currencies": "usd",
+    }
+
     try:
-        url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin}&vs_currencies=usd"
-        response = requests.get(url)
+        response = requests.get(
+            COINGECKO_SIMPLE_PRICE,
+            params=params,
+            headers=headers,
+            timeout=25,
+        )
+        if response.status_code != 200:
+            print(f"CoinGecko HTTP {response.status_code}: {response.text[:500]}")
+            return {}
         data = response.json()
-        price = data[coin]['usd']
-        return price
-    except:
-        return None
+        if not isinstance(data, dict):
+            print(f"CoinGecko: неожиданный ответ {data!r}")
+            return {}
+        if "error" in data or (
+            isinstance(data.get("status"), dict) and data["status"].get("error_code")
+        ):
+            print(f"CoinGecko API error: {data}")
+            return {}
+
+        out: dict[str, float] = {}
+        for gid in unique_ids:
+            block = data.get(gid)
+            if isinstance(block, dict) and block.get("usd") is not None:
+                out[gid] = float(block["usd"])
+        return out
+    except (requests.RequestException, TypeError, ValueError) as e:
+        print(f"CoinGecko: {e}")
+        return {}
 
 
 async def get_balance_btc(address, currency):
@@ -145,22 +189,28 @@ async def check_balances():
         total_inflow = 0.0  # Сумма поступлений
         total_outflow = 0.0  # Сумма выводов
 
-        # Блок получения курсов монет
+        # Курсы: tron в БД = USDT на TRC-20 → в CoinGecko id «tether» (не сеть Tron).
         currency_mapping = {
-            'btc': 'bitcoin',
-            'eth': 'ethereum',
-            'ton': 'the-open-network',
-            'tron': 'tether'  # Для TRON используем курс USDT
+            "btc": "bitcoin",
+            "eth": "ethereum",
+            "ton": "the-open-network",
+            "tron": "tether",
         }
+
+        gecko_prices = fetch_coingecko_usd_prices(tuple(currency_mapping.values()))
+        await asyncio.sleep(1)
 
         currencies = {}
         for coin_name, gecko_id in currency_mapping.items():
-            price = get_price(gecko_id)
-            await asyncio.sleep(10)
+            price = gecko_prices.get(gecko_id)
+
+            if price is None and coin_name == "tron":
+                # Стейблкоин ~ 1 USD; при лимитах CoinGecko не спамим алертом
+                price = 1.0
+                print("CoinGecko: нет цены tether — для tron (USDT) используем 1.0 USD")
 
             async with Session() as temp_session:
                 if price is not None:
-                    # Обновляем курс в базе данных
                     result = await temp_session.execute(
                         select(Currency).where(Currency.coin == coin_name)
                     )
@@ -175,11 +225,9 @@ async def check_balances():
                     await temp_session.commit()
                     currencies[coin_name] = price
                 else:
-                    await notify_signal( f"Ошибка при получении курса {coin_name}")
-                    # Берем последний курс из базы данных
+                    await notify_signal(f"Ошибка при получении курса {coin_name}")
                     result = await temp_session.execute(
-                        select(Currency.currency)
-                        .where(Currency.coin == coin_name)
+                        select(Currency.currency).where(Currency.coin == coin_name)
                     )
                     last_currency = result.scalar_one_or_none()
                     currencies[coin_name] = last_currency if last_currency else 0.0
