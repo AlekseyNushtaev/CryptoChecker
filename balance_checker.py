@@ -5,7 +5,7 @@ from pprint import pprint
 import requests
 from sqlalchemy import select, desc
 from db.models import Session, Wallet, Balance, User, CryptoFlow, Currency
-from bot import bot
+from bot import bot, notify_signal
 from config import ADMIN_IDS, ETH_TOKEN
 from handlers import get_admin_keyboard
 
@@ -32,7 +32,7 @@ async def get_balance_btc(address, currency):
         if address not in data:
             pprint(data)
             print(f"Адрес не найден или ошибка в ответе API - {address}")
-            await bot.send_message(1012882762, f"Адрес не найден или ошибка в ответе API BTC - {address}")
+            await notify_signal( f"Адрес не найден или ошибка в ответе API BTC - {address}")
             return None, None, None
 
         balance_satoshi = data[address]['final_balance']
@@ -44,7 +44,7 @@ async def get_balance_btc(address, currency):
 
     except Exception as e:
         print(f"Ошибка при получении баланса BTC: {e}")
-        await bot.send_message(1012882762, f"{address} - Ошибка при получении баланса BTC: {e}")
+        await notify_signal( f"{address} - Ошибка при получении баланса BTC: {e}")
         return None, None, None
 
 
@@ -64,7 +64,7 @@ async def get_balance_ton(address, currency):
 
     except Exception as e:
         print(f"Ошибка при получении баланса TON: {e}")
-        await bot.send_message(1012882762, f"{address} - Ошибка при получении баланса TON: {e}")
+        await notify_signal( f"{address} - Ошибка при получении баланса TON: {e}")
         return None, None, None
 
 
@@ -84,12 +84,12 @@ async def get_balance_eth(address, currency):
             return balance_eth, 'eth', price
         else:
             print(f"Ошибка API Etherscan: {data['message']}")
-            await bot.send_message(1012882762, f"{address} - Ошибка API Etherscan: {data['message']}")
+            await notify_signal( f"{address} - Ошибка API Etherscan: {data['message']}")
             return None, None, None
 
     except Exception as e:
         print(f"Ошибка при получении баланса ETH: {e}")
-        await bot.send_message(1012882762, f"{address} - Ошибка при получении баланса ETH: {e}")
+        await notify_signal( f"{address} - Ошибка при получении баланса ETH: {e}")
         return None, None, None
 
 
@@ -123,7 +123,7 @@ async def get_balance_usdt_tron(address, currency):
 
     except Exception as e:
         print(f"Ошибка при получении баланса USDT-TRON: {e}")
-        await bot.send_message(1012882762, f"{address} - Ошибка при получении баланса USDT-TRON: {e}")
+        await notify_signal( f"{address} - Ошибка при получении баланса USDT-TRON: {e}")
         return None, None, None
 
 
@@ -175,7 +175,7 @@ async def check_balances():
                     await temp_session.commit()
                     currencies[coin_name] = price
                 else:
-                    await bot.send_message(1012882762, f"Ошибка при получении курса {coin_name}")
+                    await notify_signal( f"Ошибка при получении курса {coin_name}")
                     # Берем последний курс из базы данных
                     result = await temp_session.execute(
                         select(Currency.currency)
@@ -297,7 +297,7 @@ async def periodic_balance_check():
         try:
             await check_balances()  # Основная задача
         except Exception as e:
-            await bot.send_message(1012882762, f"Общая ошибка: {e}")
+            await notify_signal( f"Общая ошибка: {e}")
             await asyncio.sleep(300)
         elapsed = datetime.now() - start_time  # Время выполнения задачи
         wait_time = max(timedelta(minutes=5) - elapsed, timedelta(0))  # Ждём оставшееся время

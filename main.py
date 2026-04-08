@@ -5,7 +5,7 @@ from aiogram import Dispatcher
 
 import handlers
 from balance_checker import periodic_balance_check
-from bot import bot
+from bot import bot, notify_signal
 from db.models import create_tables
 from typing import NoReturn
 
@@ -60,7 +60,7 @@ async def main() -> None:
 
         # Запуск бота в режиме long-polling
         logger.info("Запуск бота в режиме long-polling...")
-        await bot.send_message(1012882762, 'Бот запущен!!!')
+        await notify_signal('Бот запущен!!!')
         await dp.start_polling(bot)
 
 

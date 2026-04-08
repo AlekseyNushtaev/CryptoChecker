@@ -2,7 +2,9 @@
 __pycache__/
 *.py[cod]
 *$py.class
-
+test.py
+test_2.py
+transactions.json
 # C extensions
 *.so
 creds.json
