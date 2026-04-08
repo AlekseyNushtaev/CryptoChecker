@@ -24,6 +24,14 @@ from config import ADMIN_IDS, USER_PASS
 router = Router()
 
 TOKEN_ORDER = ("btc", "eth", "ton", "tron")
+WALLET_PAGE_SIZE = 20
+
+
+def clamp_wallet_page(page: int, total: int, page_size: int = WALLET_PAGE_SIZE) -> int:
+    if total <= 0:
+        return 0
+    max_p = (total - 1) // page_size
+    return max(0, min(int(page), max_p))
 
 
 def get_admin_keyboard() -> ReplyKeyboardMarkup:
@@ -114,12 +122,23 @@ async def load_wallets_sorted():
     return wallets
 
 
-def format_wallets_caption(wallets: list[Wallet]) -> str:
-    lines = ["💼 <b>Кошельки</b>", ""]
-    if not wallets:
-        lines.append("<i>Пока нет кошельков.</i>")
-        return "\n".join(lines)
-    for i, w in enumerate(wallets, start=1):
+def format_wallets_caption(
+    all_wallets: list,
+    page: int,
+    page_size: int = WALLET_PAGE_SIZE,
+) -> str:
+    n = len(all_wallets)
+    if n == 0:
+        return "💼 <b>Кошельки</b>\n\n<i>Пока нет кошельков.</i>"
+    page = clamp_wallet_page(page, n, page_size)
+    max_page = (n - 1) // page_size
+    start = page * page_size
+    chunk = all_wallets[start : start + page_size]
+    lines = [
+        f"💼 <b>Кошельки</b> <i>(стр. {page + 1}/{max_page + 1})</i>",
+        "",
+    ]
+    for i, w in enumerate(chunk, start=start + 1):
         token_u = w.token.upper()
         lines.append(
             f'{i}. <b>{token_u}</b> <code>{html.escape(w.address)}</code>'
@@ -127,26 +146,70 @@ def format_wallets_caption(wallets: list[Wallet]) -> str:
     return "\n".join(lines)
 
 
-def build_wallets_inline_keyboard(wallets) -> InlineKeyboardMarkup:
-    rows = []
-    for i, w in enumerate(wallets, start=1):
-        label = f"{i}. {w.token} {_shorten_address(w.address)}"
-        if len(label) > 64:
-            label = label[:61] + "..."
-        rows.append(
-            [
-                InlineKeyboardButton(text=label, callback_data=f"w:i:{w.id}"),
-                InlineKeyboardButton(text="Удалить", callback_data=f"w:del:{w.id}"),
-            ]
-        )
-    rows.append([InlineKeyboardButton(text="➕ Добавить кошелек", callback_data="w:add")])
+def build_wallets_inline_keyboard(
+    all_wallets: list,
+    page: int,
+    page_size: int = WALLET_PAGE_SIZE,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    n = len(all_wallets)
+    page = clamp_wallet_page(page, n, page_size) if n else 0
+    max_page = (n - 1) // page_size if n else 0
+
+    if n:
+        start = page * page_size
+        chunk = all_wallets[start : start + page_size]
+        for i, w in enumerate(chunk):
+            global_i = start + i + 1
+            label = f"{global_i}. {w.token} {_shorten_address(w.address)}"
+            if len(label) > 64:
+                label = label[:61] + "..."
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text=label, callback_data=f"w:i:{w.id}:{page}"
+                    ),
+                    InlineKeyboardButton(
+                        text="Удалить", callback_data=f"w:del:{w.id}:{page}"
+                    ),
+                ]
+            )
+
+    nav: list[InlineKeyboardButton] = []
+    if max_page > 0:
+        if page > 0:
+            nav.append(
+                InlineKeyboardButton(
+                    text="◀ Назад", callback_data=f"w:pg:{page - 1}"
+                )
+            )
+        if page < max_page:
+            nav.append(
+                InlineKeyboardButton(
+                    text="Вперед ▶", callback_data=f"w:pg:{page + 1}"
+                )
+            )
+    if nav:
+        rows.append(nav)
+
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="➕ Добавить кошелек", callback_data=f"w:add:{page}"
+            )
+        ]
+    )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-async def build_wallets_message_payload() -> tuple[str, InlineKeyboardMarkup]:
+async def build_wallets_message_payload(
+    page: int = 0,
+    page_size: int = WALLET_PAGE_SIZE,
+) -> tuple[str, InlineKeyboardMarkup]:
     wallets = await load_wallets_sorted()
-    text = format_wallets_caption(wallets)
-    kb = build_wallets_inline_keyboard(wallets)
+    page = clamp_wallet_page(page, len(wallets), page_size)
+    text = format_wallets_caption(wallets, page, page_size)
+    kb = build_wallets_inline_keyboard(wallets, page, page_size)
     return text, kb
 
 
@@ -162,8 +225,14 @@ async def delete_wallet_cascade(wallet_id: int) -> bool:
     return True
 
 
-async def try_edit_wallets_panel(bot, chat_id: int, message_id: int) -> bool:
-    text, kb = await build_wallets_message_payload()
+async def try_edit_wallets_panel(
+    bot,
+    chat_id: int,
+    message_id: int,
+    page: int = 0,
+    page_size: int = WALLET_PAGE_SIZE,
+) -> bool:
+    text, kb = await build_wallets_message_payload(page, page_size)
     try:
         await bot.edit_message_text(
             chat_id=chat_id,
@@ -318,8 +387,32 @@ async def show_stats(message: Message, state: FSMContext):
 @router.message(F.text == "💼 Кошельки", F.from_user.id.in_(ADMIN_IDS))
 async def show_wallets_panel(message: Message, state: FSMContext):
     await state.clear()
-    text, kb = await build_wallets_message_payload()
+    text, kb = await build_wallets_message_payload(page=0)
     await message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
+@router.callback_query(
+    F.data.regexp(r"^w:pg:\d+$"),
+    F.from_user.id.in_(ADMIN_IDS),
+)
+async def wallet_page_callback(callback: CallbackQuery):
+    try:
+        page = int(callback.data.split(":")[2])
+    except (IndexError, ValueError):
+        await callback.answer("Некорректная страница", show_alert=True)
+        return
+    wallets = await load_wallets_sorted()
+    page = clamp_wallet_page(page, len(wallets))
+    text = format_wallets_caption(wallets, page)
+    kb = build_wallets_inline_keyboard(wallets, page)
+    await callback.answer()
+    try:
+        await callback.message.edit_text(
+            text, reply_markup=kb, parse_mode="HTML"
+        )
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e).lower():
+            raise
 
 
 @router.callback_query(F.data == "stats:custom", F.from_user.id.in_(ADMIN_IDS))
@@ -403,10 +496,11 @@ async def stats_custom_end_date(message: Message, state: FSMContext):
     await state.clear()
 
 
-@router.callback_query(F.data.startswith("w:i:"), F.from_user.id.in_(ADMIN_IDS))
+@router.callback_query(F.data.regexp(r"^w:i:\d+:\d+$"), F.from_user.id.in_(ADMIN_IDS))
 async def wallet_info_callback(callback: CallbackQuery):
     try:
-        wid = int(callback.data.split(":")[2])
+        parts = callback.data.split(":")
+        wid = int(parts[2])
     except (IndexError, ValueError):
         await callback.answer("Ошибка данных", show_alert=True)
         return
@@ -420,8 +514,10 @@ async def wallet_info_callback(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("w:del:"), F.from_user.id.in_(ADMIN_IDS))
 async def wallet_delete_callback(callback: CallbackQuery):
+    parts = callback.data.split(":")
     try:
-        wid = int(callback.data.split(":")[2])
+        wid = int(parts[2])
+        page = int(parts[3]) if len(parts) > 3 else 0
     except (IndexError, ValueError):
         await callback.answer("Ошибка данных", show_alert=True)
         return
@@ -430,21 +526,33 @@ async def wallet_delete_callback(callback: CallbackQuery):
         await callback.answer("Уже удален или не найден", show_alert=True)
         return
     await callback.answer("Удалено")
+    wallets = await load_wallets_sorted()
+    page = clamp_wallet_page(page, len(wallets))
     edited = await try_edit_wallets_panel(
         callback.bot,
         callback.message.chat.id,
         callback.message.message_id,
+        page=page,
     )
     if not edited:
-        text, kb = await build_wallets_message_payload()
+        text, kb = await build_wallets_message_payload(page)
         await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
-@router.callback_query(F.data == "w:add", F.from_user.id.in_(ADMIN_IDS))
+@router.callback_query(
+    F.data.regexp(r"^w:add(?::\d+)?$"),
+    F.from_user.id.in_(ADMIN_IDS),
+)
 async def add_wallet_callback(callback: CallbackQuery, state: FSMContext):
+    parts = callback.data.split(":")
+    try:
+        page = int(parts[2]) if len(parts) > 2 else 0
+    except ValueError:
+        page = 0
     await state.update_data(
         wallets_panel_chat_id=callback.message.chat.id,
         wallets_panel_message_id=callback.message.message_id,
+        wallets_panel_page=page,
     )
     await state.set_state(AdminStates.waiting_for_wallet_address)
     await callback.answer()
@@ -459,6 +567,7 @@ async def add_wallet_finish(message: Message, state: FSMContext):
     data = await state.get_data()
     panel_chat_id = data.get("wallets_panel_chat_id")
     panel_message_id = data.get("wallets_panel_message_id")
+    panel_page = int(data.get("wallets_panel_page", 0))
 
     try:
         address, token = message.text.split()
@@ -487,13 +596,16 @@ async def add_wallet_finish(message: Message, state: FSMContext):
         await message.answer("Кошелек добавлен.", reply_markup=get_admin_keyboard())
 
         if panel_chat_id and panel_message_id:
+            wallets = await load_wallets_sorted()
+            page = clamp_wallet_page(panel_page, len(wallets))
             ok = await try_edit_wallets_panel(
                 message.bot,
                 panel_chat_id,
                 panel_message_id,
+                page=page,
             )
             if not ok:
-                text, kb = await build_wallets_message_payload()
+                text, kb = await build_wallets_message_payload(page)
                 await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
     except ValueError:
