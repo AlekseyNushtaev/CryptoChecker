@@ -259,7 +259,7 @@ async def custom_range_inflows_by_wallet(
 ) -> tuple[float, list[tuple[Wallet, float]], float]:
     """
     Поступления (CryptoFlow.price > 0) за [start_d, end_d] включительно.
-    Возвращает (общая сумма, список (кошелёк, сумма) в порядке списка кошельков,
+    Возвращает (общая сумма, только кошельки с суммой поступлений > 0, порядок как в списке кошельков,
     сумма по wallet_id без записи в таблице wallet — редкий случай).
     """
     start_dt = _day_boundary_datetime(start_d, end_of_day=False)
@@ -281,9 +281,11 @@ async def custom_range_inflows_by_wallet(
     known_ids = {w.id for w in wallets}
     orphan_total = sum(amt for wid, amt in by_id.items() if wid not in known_ids)
 
-    rows: list[tuple[Wallet, float]] = [
-        (w, by_id.get(w.id, 0.0)) for w in wallets
-    ]
+    rows: list[tuple[Wallet, float]] = []
+    for w in wallets:
+        v = by_id.get(w.id, 0.0)
+        if v > 0:
+            rows.append((w, v))
     return total, rows, orphan_total
 
 
@@ -475,15 +477,19 @@ async def stats_custom_end_date(message: Message, state: FSMContext):
         "",
         "<b>По кошелькам:</b>",
     ]
-    if not per_wallet:
-        msg_lines.append("<i>Нет кошельков в базе.</i>")
-    else:
+    if per_wallet:
         for w, amt in per_wallet:
             coin = w.token.upper()
             addr_full = html.escape(w.address)
             msg_lines.append(
                 f"• <b>{coin}</b> <code>{addr_full}</code> — {amt:.2f} $"
             )
+    elif total == 0 and orphan_total == 0:
+        msg_lines.append("<i>За период поступлений не было.</i>")
+    elif orphan_total == 0:
+        msg_lines.append(
+            "<i>За период не было поступлений ни по одному из кошельков в списке.</i>"
+        )
     if orphan_total > 0:
         msg_lines.append(
             f"• <i>Прочие (нет в списке кошельков)</i> — {orphan_total:.2f} $"
